@@ -1,0 +1,51 @@
+service: aws-polling-task-scheduler
+
+provider:
+  name: aws
+  runtime: nodejs4.3
+  environment:
+    RATE: 300
+    TASK_TABLE: ${self:service}-${opt:stage, self:provider.stage}-tasks
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+        - dynamodb:Scan
+      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${env:TASK_TABLE}"
+
+functions:
+  poll-scheduled:
+    cljs: aws-polling-task-scheduler.handlers/poll-scheduled
+    events:
+      - schedule: rate(${env:RATE} seconds)
+  schedule:
+    cljs: aws-polling-task-scheduler.handlers/schedule
+    events:
+      - http:
+          path: schedule
+          method: post
+
+plugins:
+  - serverless-cljs-plugin
+
+resources:
+  Resources:
+    TaskTable:
+      Type: 'AWS::DynamoDB::Table'
+      Properties:
+        TableName: ${env:TASK_TABLE}
+        AttributeDefinitions:
+          -
+            AttributeName: token
+            AttributeType: S
+        KeySchema:
+          -
+            AttributeName: token
+            KeySchema:     HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
