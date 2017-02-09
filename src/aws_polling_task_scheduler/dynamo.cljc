@@ -5,10 +5,12 @@
             [#?(:clj  clojure.core.async
                 :cljs cljs.core.async) :as async]))
 
-(defn putting-items
-  "Return a channel which'll insert items placed on it"
+(defn deleting-items
   [task-table]
-  (dynamo.chan/batching-puts (creds/env) task-table))
+  (dynamo.chan/batching-deletes (creds/env) task-table))
+
+(defn delete! [task-table item]
+  (dynamo/delete-item! (creds/env) task-table item))
 
 (defn put!
   "Return a channel containing the inserted item."
@@ -17,5 +19,12 @@
    (creds/env) task-table item
    {:chan (async/chan 1 (map (constantly item)))}))
 
-(defn by-timestamp! [task-table expiry]
-  (dynamo.chan/scan! (creds/env) task-table {:filter [:< [:now] expiry]}))
+(defn by-id! [{:keys [task-table id-index id]}]
+  (dynamo/query! (creds/env) task-table {:id [:= id]} {:index id-index}))
+
+(defn by-timestamp! [task-table watershed]
+  (dynamo.chan/query!
+   (creds/env)
+   task-table
+   {:type      [:=  :task]
+    :timestamp [:<= watershed]}))

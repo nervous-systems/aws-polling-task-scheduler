@@ -11,45 +11,78 @@ updated `next` value."
             [aws-polling-task-scheduler.time   :as time]
             [aws-polling-task-scheduler.dynamo :as dynamo]
             [aws-polling-task-scheduler.core   :as core]
-            [glossop.core :as g]
+            [taoensso.timbre :as log]
+            [glossop.core    :as g]
             [#?(:clj  clojure.core.async
                 :cljs cljs.core.async) :as async]))
 
 (def ^:private task-parallelism 5)
 
-(defn- process-one! [table task out-ch]
+(defn- process-one! [task out-ch]
   (g/go-catching
-    (g/<? (core/execute! task))
-    (let [task (assoc task :next (time/next-timestamp (task :request)))]
-      (async/>! out-ch task))))
+    (log/info "Processing task" task)
+    (g/<? (core/execute! (task :params)))
+    (async/>! out-ch task)
+    (async/close! out-ch)))
 
 (m/deflambda poll-scheduled [_ ctx]
-  (let [expiry  (+ (time/msecs) (* 1000 (ctx/env ctx :RATE)))
-        table   (ctx/env ctx :TASK_TABLE)
-        puts    (dynamo/putting-items table)]
+  (let [table  (ctx/env ctx :TASK_TABLE)
+        done   (dynamo/deleting-items table)]
     (async/pipeline-async
      task-parallelism
-     puts
-     (partial process-one! table)
-     (dynamo/by-timestamp! table expiry))))
+     (done :in-chan)
+     process-one!
+     (dynamo/by-timestamp! table (js/Date.now)))))
 
-(defn- parse-req [req]
-  {:pre [(string? (:body req))]}
-  (-> req :body js/JSON.parse (js->clj :keywordize-keys true)))
+(defn- from-json [x]
+  (-> x js/JSON.parse (js->clj :keywordize-keys true)))
+
+(defn- req->task [req]
+  {:pre [(string? (:body req)) (map? (:params req))]
+   :post [(every? % [:method :timestamp :id])]}
+  (let [task (-> req
+                :body
+                from-json
+                (select-keys [:method :params :id :timestamp])
+                (assoc :type :task))]
+    (cond-> task
+      (not (task :id)) (assoc :id (util/token)))))
+
+(defn- response [body & [ks]]
+  (merge
+   {:status  200
+    :headers {:content-type "application/json"}
+    :body    (js/JSON.stringify body)}
+   ks))
 
 (m/defgateway schedule
   "Turn an API Gateway request into a DynamoDB item in the scheduling table.
 
-Response JSON contains an item w/ a `:token` key."
+Response JSON contains an item w/ an `:id` key."
   [req ctx]
-  (let [req   (parse-req req)
-        item  (assoc (select-keys req [:method :params])
-                :token   (util/token)
-                :request req
-                :next    (time/next-timestamp req))
+  (let [task  (req->task req)
         table (ctx/env ctx :TASK_TABLE)]
+    (log/debug "Creating task" task "in" table)
     (g/go-catching
-      (g/<? (dynamo/put! table item))
-      {:status  200
-       :headers {:content-type "application/json"}
-       :body    (js/JSON.stringify item)})))
+      (g/<? (dynamo/put! table task))
+      (response task))))
+
+(m/defgateway delete
+  [req ctx]
+  (let [table (ctx/env ctx :TASK_TABLE)
+        index (ctx/env ctx :ID_INDEX)]
+    (if-let [id (-> req :path-parameters :id)]
+      (g/go-catching
+        (if-let [item (g/<? (dynamo/by-id!
+                             {:task-table table
+                              :id-index   index
+                              :id         (-> req :path-parameters :id)}))]
+          (do
+            (g/<? (dynamo/delete! task-table item))
+            (response nil {:status 200}))
+          (response nil {:status 404})))
+      (response
+       {:type    :validation
+        :message "No id"
+        :request req}
+       {:status 400}))))

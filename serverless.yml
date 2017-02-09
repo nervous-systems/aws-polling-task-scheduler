@@ -6,6 +6,7 @@ provider:
   environment:
     RATE: 300
     TASK_TABLE: ${self:service}-${opt:stage, self:provider.stage}-tasks
+    ID_INDEX:   ${self:service}-${opt:stage, self:provider.stage}-tasks-by-id
   iamRoleStatements:
     - Effect: Allow
       Action:
@@ -16,6 +17,14 @@ provider:
         - dynamodb:DeleteItem
         - dynamodb:Scan
       Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${env:TASK_TABLE}"
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${env:TASK_TABLE}/*"
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/task-*"
 
 functions:
   poll-scheduled:
@@ -26,8 +35,15 @@ functions:
     cljs: aws-polling-task-scheduler.handlers/schedule
     events:
       - http:
-          path: schedule
+          path:   task/schedule
           method: post
+          cors:   true
+   unschedule:
+     cljs: aws-polling-task-scheduler.handlers/delete
+     events:
+       - http:
+           path:   task/{id}
+           method: delete
 
 plugins:
   - serverless-cljs-plugin
@@ -39,13 +55,27 @@ resources:
       Properties:
         TableName: ${env:TASK_TABLE}
         AttributeDefinitions:
-          -
-            AttributeName: token
+          - AttributeName: type
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: N
+          - AttributeName: id
             AttributeType: S
         KeySchema:
-          -
-            AttributeName: token
+          - AttributeName: token
+            KeySchema:     HASH
+          - AttributeName: timestamp
             KeySchema:     HASH
         ProvisionedThroughput:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
+        GlobalSecondaryIndexes:
+          - IndexName: ${env:ID_INDEX}
+            KeySchema:
+              AttributeName: id
+              KeyType:       HASH
+            Projection:
+              - ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 1
+              WriteCapacityUnits: 1

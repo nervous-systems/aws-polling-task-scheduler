@@ -2,10 +2,7 @@
   :dependencies [[org.clojure/clojure       "1.8.0"]
                  [org.clojure/clojurescript "1.8.51"]
                  [io.nervous/cljs-lambda    "0.3.4"]
-                 [io.nervous/hildebrand     "0.4.5"]
-
-                 [com.andrewmcveigh/cljs-time  "0.4.0"]
-                 [clj-time                     "0.12.2"]]
+                 [io.nervous/hildebrand     "0.4.5"]]
   :plugins [[lein-cljsbuild "1.1.5"]
             [lein-npm       "0.6.2"]
             [io.nervous/lein-cljs-lambda "0.6.4"]]
