@@ -4,7 +4,6 @@ provider:
   name: aws
   runtime: nodejs4.3
   environment:
-    RATE: 300
     TASK_TABLE: ${self:service}-${opt:stage, self:provider.stage}-tasks
     ID_INDEX:   ${self:service}-${opt:stage, self:provider.stage}-tasks-by-id
   iamRoleStatements:
@@ -16,21 +15,21 @@ provider:
         - dynamodb:UpdateItem
         - dynamodb:DeleteItem
         - dynamodb:Scan
-      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${env:TASK_TABLE}"
+      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TASK_TABLE}"
     - Effect: Allow
       Action:
         - dynamodb:Query
-      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${env:TASK_TABLE}/*"
+      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TASK_TABLE}/*"
     - Effect: Allow
       Action:
         - lambda:InvokeFunction
-      Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/task-*"
+      Resource: "arn:aws:lambda:${self:provider.region}:*:task-*"
 
 functions:
   poll-scheduled:
     cljs: aws-polling-task-scheduler.handlers/poll-scheduled
     events:
-      - schedule: rate(${env:RATE} seconds)
+      - schedule: rate(5 minutes)
   schedule:
     cljs: aws-polling-task-scheduler.handlers/schedule
     events:
@@ -38,12 +37,12 @@ functions:
           path:   task/schedule
           method: post
           cors:   true
-   unschedule:
-     cljs: aws-polling-task-scheduler.handlers/delete
-     events:
-       - http:
-           path:   task/{id}
-           method: delete
+  unschedule:
+    cljs: aws-polling-task-scheduler.handlers/unschedule
+    events:
+      - http:
+          path:   task/{id}
+          method: delete
 
 plugins:
   - serverless-cljs-plugin
@@ -53,7 +52,7 @@ resources:
     TaskTable:
       Type: 'AWS::DynamoDB::Table'
       Properties:
-        TableName: ${env:TASK_TABLE}
+        TableName: ${self:provider.environment.TASK_TABLE}
         AttributeDefinitions:
           - AttributeName: type
             AttributeType: S
@@ -62,20 +61,20 @@ resources:
           - AttributeName: id
             AttributeType: S
         KeySchema:
-          - AttributeName: token
-            KeySchema:     HASH
+          - AttributeName: type
+            KeyType:       HASH
           - AttributeName: timestamp
-            KeySchema:     HASH
+            KeyType:       RANGE
         ProvisionedThroughput:
           ReadCapacityUnits: 1
           WriteCapacityUnits: 1
         GlobalSecondaryIndexes:
-          - IndexName: ${env:ID_INDEX}
+          - IndexName: ${self:provider.environment.ID_INDEX}
             KeySchema:
-              AttributeName: id
-              KeyType:       HASH
+              - AttributeName: id
+                KeyType:       HASH
             Projection:
-              - ProjectionType: ALL
+              ProjectionType: ALL
             ProvisionedThroughput:
               ReadCapacityUnits: 1
               WriteCapacityUnits: 1

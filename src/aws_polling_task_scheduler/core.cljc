@@ -4,7 +4,7 @@
             [#?(:clj  clojure.core.async
                 :cljs cljs.core.async) :as async]))
 
-(defmulti execute! "Execute a given task, return a channel" :method)
+(defmulti execute! "Execute a given task, return a channel" (comp keyword :method))
 
 (defmethod execute! :lambda [task]
   {:pre [(task :function)]}

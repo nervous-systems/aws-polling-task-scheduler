@@ -27,4 +27,5 @@
    (creds/env)
    task-table
    {:type      [:=  :task]
-    :timestamp [:<= watershed]}))
+    :timestamp [:<= watershed]}
+   {:limit 10}))

@@ -1,49 +1,51 @@
-(ns "`schedule` inserts a Dynamo item with a `next` key holding the next
+(ns aws-polling-task-scheduler.handlers
+  "`schedule` inserts a Dynamo item with a `next` key holding the next
   timestamp at which the task ought to be run, returning a `token` (for
   cancellation) stored on the item.
 
-`poll-scheduled` runs periodically, querying for items scheduled prior to now +
-`RATE`, executes them, and inserts an item with same `token` but holding the
-updated `next` value."
-  aws-polling-task-scheduler.handlers
+  `poll-scheduled` runs periodically, querying for items scheduled prior to now +
+  `RATE`, executes them, and inserts an item with same `token` but holding the
+  updated `next` value."
   (:require [cljs-lambda.macros  :as m]
             [cljs-lambda.context :as ctx]
-            [aws-polling-task-scheduler.time   :as time]
             [aws-polling-task-scheduler.dynamo :as dynamo]
+            [aws-polling-task-scheduler.util   :as util]
             [aws-polling-task-scheduler.core   :as core]
-            [taoensso.timbre :as log]
             [glossop.core    :as g]
-            [#?(:clj  clojure.core.async
-                :cljs cljs.core.async) :as async]))
+            [cljs.core.async :as async]
+            [taoensso.timbre :as log]))
 
 (def ^:private task-parallelism 5)
 
-(defn- process-one! [task out-ch]
+(defn- process-one! [table task out-ch]
+  (log/debug "Processing" task)
   (g/go-catching
-    (log/info "Processing task" task)
-    (g/<? (core/execute! (task :params)))
-    (async/>! out-ch task)
-    (async/close! out-ch)))
+    (try
+      (g/<? (core/execute! task))
+      (catch js/Error e
+        (log/error e "Unable to process task, deleting.")))
+    (dynamo/delete!
+     table
+     (select-keys task [:type :timestamp])
+     {:chan out-ch})))
 
 (m/deflambda poll-scheduled [_ ctx]
-  (let [table  (ctx/env ctx :TASK_TABLE)
-        done   (dynamo/deleting-items table)]
+  (let [table  (ctx/env ctx :TASK_TABLE)]
     (async/pipeline-async
      task-parallelism
-     (done :in-chan)
-     process-one!
+     (async/chan (async/dropping-buffer 1))
+     (partial process-one! table)
      (dynamo/by-timestamp! table (js/Date.now)))))
 
 (defn- from-json [x]
   (-> x js/JSON.parse (js->clj :keywordize-keys true)))
 
 (defn- req->task [req]
-  {:pre [(string? (:body req)) (map? (:params req))]
+  {:pre [(string? (:body req))]
    :post [(every? % [:method :timestamp :id])]}
   (let [task (-> req
                 :body
                 from-json
-                (select-keys [:method :params :id :timestamp])
                 (assoc :type :task))]
     (cond-> task
       (not (task :id)) (assoc :id (util/token)))))
@@ -52,7 +54,7 @@ updated `next` value."
   (merge
    {:status  200
     :headers {:content-type "application/json"}
-    :body    (js/JSON.stringify body)}
+    :body    (js/JSON.stringify (clj->js body))}
    ks))
 
 (m/defgateway schedule
@@ -60,25 +62,29 @@ updated `next` value."
 
 Response JSON contains an item w/ an `:id` key."
   [req ctx]
+  (log/debug "Received request" req)
   (let [task  (req->task req)
         table (ctx/env ctx :TASK_TABLE)]
-    (log/debug "Creating task" task "in" table)
+    (log/debug "Inserting" task "into" table)
     (g/go-catching
       (g/<? (dynamo/put! table task))
       (response task))))
 
-(m/defgateway delete
+(m/defgateway unschedule
   [req ctx]
+  (log/debug "Received request" req)
   (let [table (ctx/env ctx :TASK_TABLE)
         index (ctx/env ctx :ID_INDEX)]
     (if-let [id (-> req :path-parameters :id)]
       (g/go-catching
-        (if-let [item (g/<? (dynamo/by-id!
-                             {:task-table table
-                              :id-index   index
-                              :id         (-> req :path-parameters :id)}))]
+        (if-let [item (first
+                       (g/<? (dynamo/by-id!
+                              {:task-table table
+                               :id-index   index
+                               :id         (-> req :path-parameters :id)})))]
           (do
-            (g/<? (dynamo/delete! task-table item))
+            (log/info "Deleting" item)
+            (g/<? (dynamo/delete! table (select-keys item [:type :timestamp])))
             (response nil {:status 200}))
           (response nil {:status 404})))
       (response
